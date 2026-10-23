@@ -51,6 +51,7 @@ from .official_configs import (
     ResponsePostProcessConfig,
     ResponseSplitterConfig,
     TelemetryConfig,
+    ToolGuardConfig,
     VisualConfig,
     VoiceConfig,
     WebUIConfig,
@@ -72,7 +73,7 @@ MODEL_CONFIG_PATH: Path = (CONFIG_DIR / "model_config.toml").resolve().absolute(
 LEGACY_ENV_PATH: Path = (PROJECT_ROOT / ".env").resolve().absolute()
 A_MEMORIX_LEGACY_CONFIG_PATH: Path = (CONFIG_DIR / "a_memorix.toml").resolve().absolute()
 MMC_VERSION: str = read_project_version(PROJECT_ROOT)
-CONFIG_VERSION: str = "8.15.42"
+CONFIG_VERSION: str = "8.15.43"
 MODEL_CONFIG_VERSION: str = "1.17.24"
 
 logger = get_logger("config")
@@ -115,6 +116,9 @@ class Config(ConfigBase):
 
     experimental: ExperimentalConfig = Field(default_factory=ExperimentalConfig)
     """实验性功能配置类"""
+
+    tool_guard: ToolGuardConfig = Field(default_factory=ToolGuardConfig)
+    """工具调用授权与审计配置；默认关闭，旧配置缺段时使用默认值。"""
 
     visual: VisualConfig = Field(default_factory=VisualConfig)
     """视觉配置类"""

@@ -234,6 +234,74 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                 allow_kwargs_mutation=True,
             ),
             HookSpec(
+                name="maisaka.tool.before_execute",
+                description="在统一工具实际执行前触发，可中止本次调用；中止表示拒绝并回传 reason。",
+                parameters_schema=build_object_schema(
+                    {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "暴露给模型的工具名。",
+                        },
+                        "original_tool_name": {
+                            "type": "string",
+                            "description": "Provider 侧原始工具名。",
+                        },
+                        "provider_type": {
+                            "type": "string",
+                            "description": "builtin/plugin/mcp 等来源类型。",
+                        },
+                        "provider_name": {
+                            "type": "string",
+                            "description": "Provider 名称。",
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "本次工具参数；只读，改动不会生效。",
+                        },
+                        "platform": {
+                            "type": "string",
+                            "description": "当前平台。",
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "触发用户；群聊可能为空。",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "群 ID；私聊为空。",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "当前会话 ID。",
+                        },
+                        "call_id": {
+                            "type": "string",
+                            "description": "模型给出的调用 ID。",
+                        },
+                        "decision": {
+                            "type": "string",
+                            "description": "处理器可写 allow/deny。",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "拒绝原因，会写进工具结果与审计。",
+                        },
+                    },
+                    required=[
+                        "tool_name",
+                        "provider_type",
+                        "provider_name",
+                        "arguments",
+                        "platform",
+                        "session_id",
+                    ],
+                ),
+                # 0 表示退回 plugin_runtime.hook_blocking_timeout_sec；实际预算由 policy_hook_timeout_ms 外层控制
+                default_timeout_ms=0,
+                allow_abort=True,
+                allow_kwargs_mutation=True,
+            ),
+            HookSpec(
                 name="maisaka.planner.after_response",
                 description="在 Maisaka 收到模型响应后触发，可按 Item 调整输出。",
                 parameters_schema=build_object_schema(

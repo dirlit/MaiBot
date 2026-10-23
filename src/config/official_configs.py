@@ -1108,6 +1108,84 @@ class ExperimentalConfig(ConfigBase):
     """_wrap_同组聊天共享 Planner 与完整上下文，不同组独立运行；未匹配的聊天各自形成独立组。"""
 
 
+class ToolGuardConfig(ConfigBase):
+    """工具调用授权与审计配置。"""
+
+    __ui_label__ = "工具授权"
+    __ui_advanced__ = True
+    __ui_order__ = 145
+
+    policy_hook_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "启用工具调用前策略",
+                "en_US": "Enable tool policy hook",
+                "ja_JP": "ツール実行前ポリシー",
+            },
+            "x-widget": "switch",
+        },
+    )
+    """开启后每次工具调用前触发 maisaka.tool.before_execute；未注册处理器时无影响。"""
+
+    policy_hook_timeout_ms: int = Field(
+        default=3000,
+        ge=100,
+        le=30000,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "策略超时（毫秒）",
+                "en_US": "Policy timeout (ms)",
+                "ja_JP": "ポリシータイムアウト",
+            },
+            "x-widget": "number",
+        },
+    )
+    """单次策略判定的外层等待上限；超时按 policy_hook_on_error 处理。HookSpec 不固定处理器超时，避免本项大于处理器超时时失效。"""
+
+    policy_hook_on_error: Literal["deny", "allow"] = Field(
+        default="deny",
+        json_schema_extra={
+            "label": {
+                "zh_CN": "策略异常处理",
+                "en_US": "On policy error",
+                "ja_JP": "ポリシー異常時",
+            },
+            "x-widget": "select",
+            "x-option-labels": {"deny": "拒绝（更安全）", "allow": "放行"},
+        },
+    )
+    """HookDispatchResult.errors 非空、外层超时或适配器异常时的处理方式；deny 默认 fail-closed，allow 才放行。显式 abort 始终拒绝。"""
+
+    audit_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "记录工具审计",
+                "en_US": "Record tool audit",
+                "ja_JP": "ツール監査を記録",
+            },
+            "x-widget": "switch",
+        },
+    )
+    """把放行与拒绝写入 append-only 审计文件。"""
+
+    audit_path: str = Field(
+        default="logs/tool-audit.jsonl",
+        min_length=1,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "审计文件",
+                "en_US": "Audit file",
+                "ja_JP": "監査ファイル",
+            },
+            "x-widget": "input",
+            "advanced": True,
+        },
+    )
+    """相对实例根目录的审计文件路径；只追加，不轮转覆盖。"""
+
+
 class MessageReceiveConfig(ConfigBase):
     """消息接收配置类"""
 

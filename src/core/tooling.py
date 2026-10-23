@@ -262,6 +262,29 @@ class ToolProvider(Protocol):
         ...
 
 
+@dataclass(slots=True)
+class ToolPolicyDecision:
+    """工具调用前的策略判定结果。"""
+
+    allow: bool
+    reason: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class ToolPolicy(Protocol):
+    """工具调用前策略；实现方必须自行兜住异常，不得抛到调用链。"""
+
+    async def check(
+        self,
+        invocation: ToolInvocation,
+        context: Optional[ToolExecutionContext],
+        spec: ToolSpec,
+    ) -> ToolPolicyDecision:
+        """判定本次工具调用是否放行。"""
+        ...
+
+
 class ToolRegistry:
     """统一工具注册表。"""
 
@@ -269,6 +292,16 @@ class ToolRegistry:
         """初始化统一工具注册表。"""
 
         self._providers: list[ToolProvider] = []
+        self._policy: ToolPolicy | None = None
+
+    def set_policy(self, policy: ToolPolicy | None) -> None:
+        """注入工具调用前策略；传 None 关闭。
+
+        Args:
+            policy: 目标策略实现，或 None 表示关闭预调用判定。
+        """
+
+        self._policy = policy
 
     def register_provider(self, provider: ToolProvider) -> None:
         """注册一个工具提供者。
@@ -406,6 +439,37 @@ class ToolRegistry:
         route = (await self._list_routes(availability_context)).get(invocation.tool_name)
         if route is not None:
             provider, spec = route
+            # 预调用策略：拒绝时不再触达 Provider，结果形态与工具执行失败一致
+            if self._policy is not None:
+                try:
+                    decision = await self._policy.check(invocation, context, spec)
+                except Exception as exc:
+                    logger.exception(f"工具策略异常，已按拒绝处理: tool={invocation.tool_name}")
+                    # 兜底拒绝同样要留审计：适配器实现 audit_failure 才写；审计失败只记日志，不改变拒绝
+                    reporter = getattr(self._policy, "audit_failure", None)
+                    if reporter is not None:
+                        try:
+                            await reporter(invocation, context, spec, exc)
+                        except Exception:
+                            logger.exception(f"工具策略兜底审计失败: tool={invocation.tool_name}")
+                    decision = ToolPolicyDecision(
+                        allow=False,
+                        reason=f"策略执行异常: {exc.__class__.__name__}",
+                    )
+                if not decision.allow:
+                    return ToolExecutionResult(
+                        tool_name=invocation.tool_name,
+                        success=False,
+                        error_message=(
+                            f"工具 {invocation.tool_name} 被策略拒绝：{decision.reason or '未说明原因'}"
+                        ),
+                        metadata={
+                            **decision.metadata,
+                            "policy_denied": True,
+                            "policy_reason": decision.reason,
+                        },
+                    )
+
             metadata = dict(invocation.metadata)
             if provider.provider_type == "mcp":
                 # 服务器选择来自注册表，不接受调用方伪造的路由元数据。

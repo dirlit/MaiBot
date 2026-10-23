@@ -1314,6 +1314,24 @@ class MaisakaHeartFlowChatting(MaisakaRuntimeDisplayMixin):
         self._tool_registry.register_provider(MCPToolProvider(get_mcp_service()))
         self._chat_loop_service.set_tool_registry(self._tool_registry)
 
+        # 延迟导入，避免 core/maisaka 与插件运行时的模块级循环依赖
+        from src.common.tool_audit import configure_tool_audit, get_tool_audit_writer
+        from src.plugin_runtime.tool_policy import HookToolPolicy
+
+        guard = global_config.tool_guard
+        # 审计开关独立于策略开关：只开审计时不注入策略，行为与今天一致
+        if guard.audit_enabled:
+            configure_tool_audit(guard.audit_path)
+
+        if guard.policy_hook_enabled:
+            self._tool_registry.set_policy(
+                HookToolPolicy(
+                    timeout_ms=guard.policy_hook_timeout_ms,
+                    on_error=guard.policy_hook_on_error,
+                    audit=get_tool_audit_writer(),
+                )
+            )
+
     async def run_sub_agent(
         self,
         *,
