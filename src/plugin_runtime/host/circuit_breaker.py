@@ -156,6 +156,24 @@ class PluginCircuitBreaker:
 
         self._open_circuit(permit, reason, state, now)
 
+    def record_cancelled(self, permit: CircuitPermit, reason: str = "") -> None:
+        """记录一次被取消的调用。
+
+        取消不是插件失败的证据，不累计失败次数；但必须释放半开探测占位，
+        否则后续调用会一直停在“半开测试已有进行中调用”而无法恢复。
+        """
+
+        if not permit.allowed:
+            return
+
+        state = self._states.setdefault(permit.plugin_id, _CircuitState())
+        was_half_open = permit.half_open or state.state == "half_open"
+        state.half_open_inflight = False
+        if was_half_open:
+            logger.warning(
+                f"插件 {permit.plugin_id} 半开测试被取消，已释放测试占位: {reason or '未提供原因'}"
+            )
+
     def _open_circuit(self, permit: CircuitPermit, reason: str, state: _CircuitState, now: float) -> None:
         """打开指定插件的熔断状态。"""
 

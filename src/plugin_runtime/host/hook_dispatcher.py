@@ -439,9 +439,18 @@ class HookDispatcher:
             f"hook:{hook_name}",
         )
         if not circuit_permit.allowed:
+            # 熔断拒绝必须进 errors：默认 error_policy=skip 不会置 aborted，
+            # 静默返回成功会让上层策略误判为放行。
+            error_message = (
+                f"CircuitOpen: HookHandler {target.entry.full_name} 被熔断跳过: "
+                f"{circuit_permit.reason or '插件熔断中'}"
+            )
+            logger.warning(error_message)
             return HookHandlerExecutionResult(
                 handler_name=target.entry.full_name,
                 plugin_id=target.entry.plugin_id,
+                success=False,
+                error_message=error_message,
             )
 
         try:
@@ -455,6 +464,13 @@ class HookDispatcher:
                 ),
                 timeout=max(timeout_ms / 1000.0, 0.001),
             )
+        except asyncio.CancelledError:
+            # 外层超时/关闭会取消本次调用；必须释放半开探测占位，避免永久拒绝后续调用
+            get_plugin_circuit_breaker().record_cancelled(
+                circuit_permit,
+                f"HookHandler {target.entry.full_name} 调用被取消",
+            )
+            raise
         except asyncio.TimeoutError:
             get_plugin_circuit_breaker().record_failure(circuit_permit, f"HookHandler 超时 {timeout_ms}ms")
             error_message = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import asyncio
@@ -200,6 +201,23 @@ async def test_hook_adapter_on_error_allow(monkeypatch: pytest.MonkeyPatch, tmp_
     assert "on_error=allow" in timeout_entries[0]["reason"]
 
 
+@pytest.mark.asyncio
+async def test_hook_adapter_on_error_allow_reaches_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = _FakeRuntimeManager(_DispatchResult(errors=["handler crashed"]))
+    _install_manager(monkeypatch, manager)
+    policy = HookToolPolicy(timeout_ms=200, on_error="allow", audit=None)
+    provider = _FakeProvider()
+    registry = ToolRegistry()
+    registry.register_provider(provider)
+    registry.set_policy(policy)
+
+    result = await registry.invoke(_make_invocation(), _make_context())
+
+    assert result.success is True
+    assert [invocation.tool_name for invocation in provider.invocations] == ["echo"]
+    assert "policy_denied" not in result.metadata
+
+
 def test_audit_hash_chain(tmp_path: Path) -> None:
     path = tmp_path / "tool-audit.jsonl"
     writer = ToolAuditWriter(path)
@@ -316,3 +334,44 @@ async def test_audit_seq_and_chain_via_hook(monkeypatch: pytest.MonkeyPatch, tmp
     assert [entry["call_id"] for entry in entries] == ["c1", "c2"]
     assert all("args_hash" in entry for entry in entries)
     assert "secret.txt" not in raw
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_writes_registry_error(tmp_path: Path) -> None:
+    path = tmp_path / "audit-failure.jsonl"
+    policy = HookToolPolicy(timeout_ms=200, on_error="deny", audit=ToolAuditWriter(path))
+
+    await policy.audit_failure(_make_invocation(), _make_context(), _make_spec(), RuntimeError("boom"))
+
+    entries = _read_entries(path)
+    assert len(entries) == 1
+    assert entries[0]["action"] == "deny"
+    assert entries[0]["decided_by"] == "registry_error"
+    assert "RuntimeError" in entries[0]["reason"]
+
+
+def test_tool_policy_hook_spec_reads_config_timeout_at_registration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.maisaka import chat_loop_service
+    from src.plugin_runtime.host.hook_spec_registry import HookSpecRegistry
+
+    configured_timeout_ms = 4321
+    fake_global_config = SimpleNamespace(
+        tool_guard=SimpleNamespace(policy_hook_timeout_ms=configured_timeout_ms)
+    )
+    monkeypatch.setattr(chat_loop_service, "global_config", fake_global_config)
+    registry = HookSpecRegistry()
+
+    registered_specs = chat_loop_service.register_maisaka_hook_specs(registry)
+
+    tool_spec = registry.get_hook_spec("maisaka.tool.before_execute")
+    assert tool_spec is not None
+    assert tool_spec.default_timeout_ms == configured_timeout_ms
+    assert tool_spec.allow_abort is True
+    assert tool_spec.allow_kwargs_mutation is True
+    assert any(spec.name == "maisaka.tool.before_execute" for spec in registered_specs)
+
+
+def test_tool_guard_timeout_default_is_3000() -> None:
+    from src.config.official_configs import ToolGuardConfig
+
+    assert ToolGuardConfig().policy_hook_timeout_ms == 3000

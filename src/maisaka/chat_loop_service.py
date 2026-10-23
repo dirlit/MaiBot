@@ -176,6 +176,9 @@ logger = get_logger("maisaka_chat_loop")
 def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
     """注册 Maisaka 规划器与 replyer 内置 Hook 规格。
 
+    工具策略 Hook 的默认超时在注册时从配置读取；注册发生在配置初始化之后，
+    因此这里拿到的是已加载的配置值，而不是 import 期快照。
+
     Args:
         registry: 目标 Hook 规格注册中心。
 
@@ -183,6 +186,7 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
         List[HookSpec]: 实际注册的 Hook 规格列表。
     """
 
+    policy_hook_timeout_ms = global_config.tool_guard.policy_hook_timeout_ms
     return registry.register_hook_specs(
         [
             HookSpec(
@@ -296,8 +300,8 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                         "session_id",
                     ],
                 ),
-                # 0 表示退回 plugin_runtime.hook_blocking_timeout_sec；实际预算由 policy_hook_timeout_ms 外层控制
-                default_timeout_ms=0,
+                # 与策略外层等待预算一致；注册时读取配置，避免分发器退回 60s 默认值
+                default_timeout_ms=policy_hook_timeout_ms,
                 allow_abort=True,
                 allow_kwargs_mutation=True,
             ),

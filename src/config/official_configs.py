@@ -1126,7 +1126,7 @@ class ToolGuardConfig(ConfigBase):
             "x-widget": "switch",
         },
     )
-    """开启后每次工具调用前触发 maisaka.tool.before_execute；未注册处理器时无影响。"""
+    """开启后每次工具调用前触发 maisaka.tool.before_execute；未注册处理器时无影响。策略对所有工具生效（含 reply/wait），误配可能静默阻断回复。"""
 
     policy_hook_timeout_ms: int = Field(
         default=3000,
@@ -1141,7 +1141,7 @@ class ToolGuardConfig(ConfigBase):
             "x-widget": "number",
         },
     )
-    """单次策略判定的外层等待上限；超时按 policy_hook_on_error 处理。HookSpec 不固定处理器超时，避免本项大于处理器超时时失效。"""
+    """单次策略判定的外层等待上限，同时作为 HookSpec 处理器硬超时；注册时读取、重启生效。超时按 policy_hook_on_error 处理。"""
 
     policy_hook_on_error: Literal["deny", "allow"] = Field(
         default="deny",
