@@ -5878,6 +5878,27 @@ class MCPServerItemConfig(ConfigBase):
     )
     """HTTP/SSE 连接的认证设置。"""
 
+    allowed_tools: list[str] = Field(
+        default_factory=lambda: [],
+        json_schema_extra={
+            "label": {"zh_CN": "允许的工具", "en_US": "Allowed tools", "ja_JP": "許可ツール"},
+            "x-widget": "tags",
+            "x-placeholder": "留空不限制；支持 * ? [",
+        },
+    )
+    """该服务器允许暴露与调用的工具名；为空表示不限制。"""
+
+    disabled_tools: list[str] = Field(
+        default_factory=lambda: [],
+        json_schema_extra={
+            "label": {"zh_CN": "禁用的工具", "en_US": "Disabled tools", "ja_JP": "禁止ツール"},
+            "x-widget": "tags",
+            "x-placeholder": "优先级高于允许的工具；支持 * ? [",
+            "advanced": True,
+        },
+    )
+    """该服务器禁止的工具名，优先级高于 allowed_tools。"""
+
     def model_post_init(self, context: Optional[dict] = None) -> None:
         """验证 MCP 服务器配置。
 
@@ -5905,6 +5926,14 @@ class MCPServerItemConfig(ConfigBase):
 
         if self.authorization.mode == "bearer" and not self.authorization.bearer_token.strip():
             raise ValueError(f"MCP 服务器 {self.name} 使用 bearer 认证时必须填写 bearer_token")
+
+        if any(not item.strip() for item in (*self.allowed_tools, *self.disabled_tools)):
+            raise ValueError(f"MCP 服务器 {self.name} 的工具名不能为空字符串")
+        allowed = {item.strip() for item in self.allowed_tools}
+        disabled = {item.strip() for item in self.disabled_tools}
+        overlap = allowed & disabled
+        if overlap:
+            raise ValueError(f"MCP 服务器 {self.name} 的工具同时出现在 allowed/disabled: {sorted(overlap)}")
 
         return super().model_post_init(context)
 

@@ -1,6 +1,6 @@
 """进程级 MCP 共享服务回归测试。"""
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -18,6 +18,7 @@ class _FakeManager:
         self.server_count = 1
         self.tool_count = 1
         self.close_count = 0
+        self.call_contexts: list[Optional[ToolExecutionContext]] = []
 
     def get_tool_specs(self) -> list[ToolSpec]:
         return [ToolSpec(name=f"{self.name}_tool")]
@@ -42,7 +43,12 @@ class _FakeManager:
             ],
         }
 
-    async def call_tool_invocation(self, invocation: ToolInvocation) -> ToolExecutionResult:
+    async def call_tool_invocation(
+        self,
+        invocation: ToolInvocation,
+        context: Optional[ToolExecutionContext] = None,
+    ) -> ToolExecutionResult:
+        self.call_contexts.append(context)
         return ToolExecutionResult(
             tool_name=invocation.tool_name,
             success=True,
@@ -88,13 +94,15 @@ async def test_service_reuses_unchanged_manager_and_preserves_context(
     )
 
     tools = await service.list_tools()
+    context = ToolExecutionContext(session_id="session-1", stream_id="stream-1")
     result = await service.call_tool_invocation(
         ToolInvocation(tool_name="local_tool"),
-        ToolExecutionContext(session_id="session-1", stream_id="stream-1"),
+        context,
     )
 
     assert len(created_managers) == 1
     assert [tool.name for tool in tools] == ["local_tool"]
+    assert created_managers[0].call_contexts == [context]
     assert result.metadata["chat_session_id"] == "session-1"
     assert result.metadata["chat_stream_id"] == "stream-1"
     assert service.get_status_snapshot()["server_count"] == 1

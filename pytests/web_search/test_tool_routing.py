@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolRegistry, ToolSpec
-from src.mcp_module.config import MCPClientRuntimeConfig
+from src.mcp_module.config import MCPClientRuntimeConfig, MCPServerRuntimeConfig
 from src.mcp_module.manager import MCPManager
 from src.mcp_module.provider import MCPToolProvider
 from src.mcp_module.service import MCPService
@@ -84,7 +84,12 @@ async def test_multiple_mcp_servers_with_same_tool_are_both_callable():
             calls.append((server, name, arguments))
             return ToolExecutionResult(tool_name=name, success=True, content=server)
 
-        return SimpleNamespace(tools=[Tool(name="web_search", inputSchema={"type": "object"})], call_tool=call_tool)
+        config = MCPServerRuntimeConfig(name=server, transport="stdio", command="python")
+        return SimpleNamespace(
+            config=config,
+            tools=[Tool(name="web_search", inputSchema={"type": "object"})],
+            call_tool=call_tool,
+        )
 
     for server in ("alpha", "beta"):
         manager._connections[server] = connection(server)

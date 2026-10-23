@@ -257,7 +257,7 @@ class MCPService:
                     success=False,
                     error_message="MCP 共享服务尚未连接任何服务器",
                 )
-            result = await manager.call_tool_invocation(invocation)
+            result = await manager.call_tool_invocation(invocation, context)
 
         if context is not None:
             result.metadata.setdefault("chat_session_id", context.session_id)

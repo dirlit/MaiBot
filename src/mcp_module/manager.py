@@ -5,13 +5,16 @@ MaiSaka - MCP 管理器
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Literal, Optional
 
 import asyncio
+import fnmatch
 
 from src.cli.console import console
 from src.common.startup_diagnostics import diagnostic_stage
+from src.common.tool_audit import get_tool_audit_writer
 from src.core.tooling import (
+    ToolExecutionContext,
     ToolExecutionResult,
     ToolInvocation,
     ToolSpec,
@@ -55,6 +58,85 @@ BUILTIN_TOOL_NAMES = frozenset(
         "view_table",
     }
 )
+
+
+def _matches(pattern: str, tool_name: str) -> bool:
+    """精确匹配工具名；模式含通配符时按 fnmatch。
+
+    Args:
+        pattern: 配置中的工具名或通配模式。
+        tool_name: 服务器声明的原始工具名。
+
+    Returns:
+        bool: 是否命中。
+    """
+
+    if any(marker in pattern for marker in "*?["):
+        return fnmatch.fnmatchcase(tool_name, pattern)
+    return pattern == tool_name
+
+
+def is_tool_allowed(config: MCPServerRuntimeConfig, tool_name: str) -> bool:
+    """判断某服务器是否允许暴露并调用该工具。
+
+    allowed_tools 为空视为不限制；disabled_tools 优先。
+
+    Args:
+        config: 服务器运行时配置。
+        tool_name: 服务器声明的原始工具名。
+
+    Returns:
+        bool: 是否允许。
+    """
+
+    name = tool_name.strip()
+    if not name:
+        return False
+    if any(_matches(pattern, name) for pattern in config.disabled_tools):
+        return False
+    if not config.allowed_tools:
+        return True
+    return any(_matches(pattern, name) for pattern in config.allowed_tools)
+
+
+async def _audit_mcp_decision(
+    action: Literal["allow", "deny"],
+    server_name: str,
+    tool_name: str,
+    invocation: ToolInvocation,
+    context: Optional[ToolExecutionContext],
+) -> None:
+    """记录一次 MCP 策略判定（allow/deny）；写盘放线程池，不阻塞事件循环。
+
+    Args:
+        action: 判定结果。
+        server_name: 服务器名称。
+        tool_name: 工具名称。
+        invocation: 统一工具调用请求。
+        context: 工具执行上下文，旧调用入口可能为空。
+
+    Returns:
+        None
+    """
+
+    if action == "deny":
+        console.print(f"[warning]⚠️ MCP 工具调用被策略拒绝: server={server_name} tool={tool_name}[/warning]")
+    writer = get_tool_audit_writer()
+    if writer is None:
+        return
+    await asyncio.to_thread(
+        writer.record,
+        action=action,
+        tool=tool_name,
+        provider_type="mcp",
+        platform=context.platform if context else "",
+        session_id=(context.session_id if context else "") or invocation.session_id,
+        user_id=context.user_id if context else "",
+        call_id=invocation.call_id,
+        args=dict(invocation.arguments or {}),
+        reason="MCP 服务器策略禁用" if action == "deny" else "",
+        decided_by=f"mcp:{server_name}",
+    )
 
 
 class MCPManager:
@@ -203,6 +285,18 @@ class MCPManager:
             if task is not None:
                 task.add_done_callback(lambda _task: callback())
 
+    def _allowed_tools(self, connection: MCPConnection) -> list[Any]:
+        """返回该连接中未被服务器策略禁用的工具。
+
+        Args:
+            connection: 对应连接对象。
+
+        Returns:
+            list[Any]: 允许暴露与调用的原始工具对象。
+        """
+
+        return [tool for tool in connection.tools if is_tool_allowed(connection.config, str(tool.name))]
+
     def get_status_snapshot(self) -> dict[str, Any]:
         """返回可跨线程读取的纯数据连接状态快照。"""
 
@@ -215,7 +309,7 @@ class MCPManager:
                     "transport": config.transport,
                     "connected": connection is not None and connection.session is not None,
                     "protocol_version": connection.protocol_version if connection is not None else "",
-                    "tool_count": len(connection.tools) if connection is not None else 0,
+                    "tool_count": len(self._allowed_tools(connection)) if connection is not None else 0,
                     "error": (
                         connection.last_error
                         if connection is not None
@@ -242,7 +336,7 @@ class MCPManager:
         """
 
         registered_count = 0
-        for tool in connection.tools:
+        for tool in self._allowed_tools(connection):
             tool_name = str(tool.name)
 
             # 保留所有服务器的工具；裸名称兼容旧调用，统一注册表给重名项添加来源前缀。
@@ -365,7 +459,7 @@ class MCPManager:
 
         tool_specs: list[ToolSpec] = []
         for server_name, connection in self._connections.items():
-            for tool in connection.tools:
+            for tool in self._allowed_tools(connection):
                 parameters_schema = self._build_tool_parameters_schema(tool)
                 output_schema = self._build_tool_output_schema(tool)
                 description = str(tool.description or f"来自 {server_name} 的 MCP 工具").strip()
@@ -487,11 +581,16 @@ class MCPManager:
 
         return uri in self._resource_to_server
 
-    async def call_tool_invocation(self, invocation: ToolInvocation) -> ToolExecutionResult:
+    async def call_tool_invocation(
+        self,
+        invocation: ToolInvocation,
+        context: Optional[ToolExecutionContext] = None,
+    ) -> ToolExecutionResult:
         """执行统一的 MCP 工具调用。
 
         Args:
             invocation: 统一工具调用请求。
+            context: 工具执行上下文，用于放行/拒绝审计；旧入口可为空。
 
         Returns:
             ToolExecutionResult: 统一工具执行结果。
@@ -507,12 +606,22 @@ class MCPManager:
             )
 
         connection = self._connections[server_name]
+        if not is_tool_allowed(connection.config, tool_name):
+            # 注册表之外也可能带进 server_name，执行前必须再判一次。
+            await _audit_mcp_decision("deny", server_name, tool_name, invocation, context)
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                success=False,
+                error_message=f"MCP 工具 '{tool_name}' 已被服务器 '{server_name}' 的策略禁用",
+            )
         if not any(tool.name == tool_name for tool in connection.tools):
             return ToolExecutionResult(
                 tool_name=tool_name,
                 success=False,
                 error_message=f"MCP 服务器 '{server_name}' 未提供工具 '{tool_name}'",
             )
+        # 放行同样留痕：真正调用 server 之前写一条 allow，拒绝/放行成对可核。
+        await _audit_mcp_decision("allow", server_name, tool_name, invocation, context)
         return await connection.call_tool(tool_name, invocation.arguments)
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
@@ -582,7 +691,7 @@ class MCPManager:
 
         parts: list[str] = []
         for server_name, connection in self._connections.items():
-            tool_names = [str(tool.name) for tool in connection.tools]
+            tool_names = [str(tool.name) for tool in self._allowed_tools(connection)]
             if tool_names:
                 parts.append(f"  • {server_name}: {', '.join(tool_names)}")
         return "\n".join(parts)
@@ -596,7 +705,7 @@ class MCPManager:
 
         parts: list[str] = []
         for server_name, connection in self._connections.items():
-            tool_count = len(connection.tools)
+            tool_count = len(self._allowed_tools(connection))
             prompt_count = sum(
                 1 for prompt in connection.prompts if self._prompt_to_server.get(prompt.name) == server_name
             )
@@ -632,7 +741,7 @@ class MCPManager:
             int: 工具数量。
         """
 
-        return sum(len(connection.tools) for connection in self._connections.values())
+        return sum(len(self._allowed_tools(connection)) for connection in self._connections.values())
 
     @property
     def prompt_count(self) -> int:

@@ -59,6 +59,8 @@ class MCPServerRuntimeConfig:
     http_timeout_seconds: float = 30.0
     read_timeout_seconds: float = 300.0
     authorization: MCPAuthorizationRuntimeConfig = field(default_factory=MCPAuthorizationRuntimeConfig)
+    allowed_tools: list[str] = field(default_factory=list)
+    disabled_tools: list[str] = field(default_factory=list)
 
     @property
     def transport_type(self) -> str:
@@ -147,6 +149,26 @@ def build_mcp_server_runtime_configs(mcp_config: "MCPConfig") -> list[MCPServerR
     return runtime_configs
 
 
+def _normalize_tool_names(values: list[str]) -> list[str]:
+    """去空白、去重并保持顺序。
+
+    Args:
+        values: 原始工具名列表。
+
+    Returns:
+        list[str]: 归一化后的工具名列表。
+    """
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values:
+        name = str(value).strip()
+        if name and name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
+
+
 def build_mcp_server_runtime_config(server: "MCPServerItemConfig") -> MCPServerRuntimeConfig:
     """将单个官方 MCP 服务配置转换为运行时配置。
 
@@ -171,4 +193,6 @@ def build_mcp_server_runtime_config(server: "MCPServerItemConfig") -> MCPServerR
             mode=server.authorization.mode,
             bearer_token=server.authorization.bearer_token.strip(),
         ),
+        allowed_tools=_normalize_tool_names(server.allowed_tools),
+        disabled_tools=_normalize_tool_names(server.disabled_tools),
     )
