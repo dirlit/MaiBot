@@ -201,6 +201,72 @@ async def test_call_tool_invocation_rejects_disabled_with_reason() -> None:
     assert connection.calls == []
 
 
+def _boom_record(*args: Any, **kwargs: Any) -> None:
+    """模拟 A7 审计写入器写盘抛异常。"""
+
+    raise RuntimeError("audit disk full")
+
+
+@pytest.mark.asyncio
+async def test_audit_write_failure_keeps_allowed_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("mcp")
+    audit_path = tmp_path / "tool-audit.jsonl"
+    writer = ToolAuditWriter(audit_path)
+    monkeypatch.setattr(writer, "record", _boom_record)
+    monkeypatch.setattr("src.mcp_module.manager.get_tool_audit_writer", lambda: writer)
+    config = _config(allowed_tools=["read_file"])
+    connection = _FakeConnection(config, ["read_file"])
+    manager = MCPManager(MCPClientRuntimeConfig())
+    manager._connections = {"x": connection}
+
+    result = await manager.call_tool_invocation(
+        ToolInvocation(
+            tool_name="read_file",
+            arguments={"path": "public.txt"},
+            call_id="call-1",
+            metadata={"mcp_server_name": "x"},
+        )
+    )
+
+    assert result.success is True
+    assert result.content == "ok"
+    assert [call[0] for call in connection.calls] == ["read_file"]
+    assert not audit_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_audit_write_failure_keeps_denied_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("mcp")
+    audit_path = tmp_path / "tool-audit.jsonl"
+    writer = ToolAuditWriter(audit_path)
+    monkeypatch.setattr(writer, "record", _boom_record)
+    monkeypatch.setattr("src.mcp_module.manager.get_tool_audit_writer", lambda: writer)
+    config = _config(allowed_tools=["read_file"])
+    connection = _FakeConnection(config, ["read_file", "write_file"])
+    manager = MCPManager(MCPClientRuntimeConfig())
+    manager._connections = {"x": connection}
+
+    result = await manager.call_tool_invocation(
+        ToolInvocation(
+            tool_name="write_file",
+            arguments={"path": "secret.txt"},
+            call_id="call-2",
+            metadata={"mcp_server_name": "x"},
+        )
+    )
+
+    assert result.success is False
+    assert "策略禁用" in result.error_message
+    assert connection.calls == []
+    assert not audit_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_denied_and_allowed_audit_write_seq(
     monkeypatch: pytest.MonkeyPatch,

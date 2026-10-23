@@ -11,6 +11,7 @@ import asyncio
 import fnmatch
 
 from src.cli.console import console
+from src.common.logger import get_logger
 from src.common.startup_diagnostics import diagnostic_stage
 from src.common.tool_audit import get_tool_audit_writer
 from src.core.tooling import (
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 # 连接层加载包含 SDK 子阶段，两者属于嵌套墙钟耗时，不能相加。
 with diagnostic_stage("mcp.import_connection"):
     from .connection import MCPConnection, MCP_AVAILABLE
+
+logger = get_logger("mcp_manager")
 
 # 旧 OpenAI 工具列表保留的内置名称；统一工具注册表通过来源前缀保留重名 MCP 工具。
 BUILTIN_TOOL_NAMES = frozenset(
@@ -106,7 +109,7 @@ async def _audit_mcp_decision(
     invocation: ToolInvocation,
     context: Optional[ToolExecutionContext],
 ) -> None:
-    """记录一次 MCP 策略判定（allow/deny）；写盘放线程池，不阻塞事件循环。
+    """记录一次 MCP 策略判定（allow/deny）；写盘放线程池，不阻塞事件循环，写盘异常只记 warning。
 
     Args:
         action: 判定结果。
@@ -121,22 +124,30 @@ async def _audit_mcp_decision(
 
     if action == "deny":
         console.print(f"[warning]⚠️ MCP 工具调用被策略拒绝: server={server_name} tool={tool_name}[/warning]")
-    writer = get_tool_audit_writer()
-    if writer is None:
-        return
-    await asyncio.to_thread(
-        writer.record,
-        action=action,
-        tool=tool_name,
-        provider_type="mcp",
-        platform=context.platform if context else "",
-        session_id=(context.session_id if context else "") or invocation.session_id,
-        user_id=context.user_id if context else "",
-        call_id=invocation.call_id,
-        args=dict(invocation.arguments or {}),
-        reason="MCP 服务器策略禁用" if action == "deny" else "",
-        decided_by=f"mcp:{server_name}",
-    )
+    try:
+        writer = get_tool_audit_writer()
+        if writer is None:
+            return
+        await asyncio.to_thread(
+            writer.record,
+            action=action,
+            tool=tool_name,
+            provider_type="mcp",
+            platform=context.platform if context else "",
+            session_id=(context.session_id if context else "") or invocation.session_id,
+            user_id=context.user_id if context else "",
+            call_id=invocation.call_id,
+            args=dict(invocation.arguments or {}),
+            reason="MCP 服务器策略禁用" if action == "deny" else "",
+            decided_by=f"mcp:{server_name}",
+        )
+    except Exception as exc:
+        # 审计写盘失败只留日志，绝不影响策略判定与工具调用结果。
+        logger.warning(
+            f"MCP 工具审计写入失败（不影响调用）: server={server_name} tool={tool_name} "
+            f"action={action} error={exc}",
+            exc_info=True,
+        )
 
 
 class MCPManager:
